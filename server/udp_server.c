@@ -99,7 +99,7 @@ int main() {
             printf("Sent: %s\n", sendBuf);
         }
 
-        // Handle termination key
+        // Exit
         else if (recvBuf[0] == QUITKEY) {
             char eSeq[6], timeRecv[32];
             sscanf(recvBuf, "%*s %s %s", eSeq, timeRecv);
