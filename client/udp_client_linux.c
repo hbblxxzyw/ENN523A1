@@ -9,7 +9,7 @@
 #include <time.h>
 
 #define SERVER_IP "127.0.0.1" // local testing IP
-#define PORT 8888             // same port as server
+#define PORT 9999            // same port as server
 #define BUFLEN 1024
 #define QUITKEY 'E'
 
@@ -44,10 +44,18 @@ int main() {
     // Set up server address
     memset(&server, 0, sizeof(server));
     server.sin_family = AF_INET;
-    server.sin_addr.s_addr = inet_addr(SERVER_IP);
+    server.sin_addr.s_addr = INADDR_ANY;
     server.sin_port = htons(PORT);
 
+    if (bind(sock, (const struct sockaddr *)&server, sizeof(server)) < 0) {
+        perror("Bind failed");
+        close(sock);
+        exit(EXIT_FAILURE);
+    }
+
     printf("UDP Client running. Waiting for messages...\n");
+
+
 
     while (1) {
         // Wait for message from server

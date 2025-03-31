@@ -5,6 +5,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <sys/time.h>
 #include <time.h>
 
 #define PORT 8888 // Port number for UDP
@@ -53,8 +54,13 @@ int main() {
     // Set up server address
     memset(&server, 0, sizeof(server));
     server.sin_family = AF_INET;
-    server.sin_addr.s_addr = inet_addr("localhost");
+    server.sin_addr.s_addr =  INADDR_ANY;
     server.sin_port = htons(PORT);
+
+    client.sin_family = AF_INET;
+    client.sin_addr.s_addr = inet_addr("127.0.0.1");
+    client.sin_port = htons(9999);
+
 
     // Bind socket to address
     if (bind(sock, (struct sockaddr*)&server, sizeof(server)) == -1) {
@@ -65,15 +71,20 @@ int main() {
 
     printf("UDP Server running on port %d...\n", PORT);
 
+    struct timeval timeout;
+    timeout.tv_sec = 5;
+    timeout.tv_usec = 0;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
+
     while (1) {
-        char seqstr[6];
-        sprintf(seqstr, "%05d", seq); // Format sequence number
+        char seqstr[100];
+        sprintf(seqstr, "%d", seq); // Format sequence number
 
         // Send "R <seq> <timestamp>" to client
         startTime = get_time_ms();
         sprintf(sendBuf, "R %s %s", seqstr, get_time_str());
 
-        if (sendto(sock, sendBuf, strlen(sendBuf), 0, (struct sockaddr*)&client, slen) == -1) {
+        if (sendto(sock, sendBuf, sizeof(sendBuf), 0, (struct sockaddr*)&client, sizeof(client)) == -1) {
             perror("Send failed");
             break;
         }
@@ -82,8 +93,9 @@ int main() {
         // Receive reply
         int recvLen = recvfrom(sock, recvBuf, BUFLEN, 0, (struct sockaddr*)&client, &slen);
         if (recvLen == -1) {
-            perror("Receive failed");
-            break;
+            continue;
+            //perror("Receive failed");
+            //break;
         }
         recvBuf[recvLen] = '\0';
         printf("Received: %s\n", recvBuf);
