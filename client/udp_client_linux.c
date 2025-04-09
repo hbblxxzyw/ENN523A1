@@ -1,4 +1,3 @@
-
 // ENN523A1 - UDP Client (Linux Version)
 
 #include <stdio.h>
@@ -8,30 +7,46 @@
 #include <arpa/inet.h>
 #include <time.h>
 
-#define SERVER_IP "127.0.0.1" // local testing IP
-#define PORT 9999            // same port as server
+#define SERVER_IP "127.0.0.1" // Server IP
+#define SERVER_PORT 8888      // Server listening port
+#define CLIENT_PORT 9999      // Client binds to this port
 #define BUFLEN 1024
 #define QUITKEY 'E'
 
-// Get current timestamp string (similar to Windows version)
+// Get current timestamp string (hh:mm:ss:SSS)
 char* get_time_str() {
     static char timestr[32];
     struct timespec ts;
     struct tm *tm_info;
-    
+
     clock_gettime(CLOCK_REALTIME, &ts);
     tm_info = localtime(&ts.tv_sec);
-    
-    snprintf(timestr, sizeof(timestr), "%02d:%02d:%02d:%03ld", 
+
+    snprintf(timestr, sizeof(timestr), "%02d:%02d:%02d:%03ld",
              tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec, ts.tv_nsec / 1000000);
     return timestr;
 }
 
-int main() {
+int main(int argc, char **argv) {
+
+    if (argc < 2 || argc > 3) {
+        fprintf(stderr, "Usage: ./udp_client_linux IPCONFIG_FILENAME\n");
+        return 0;
+    }
     int sock;
-    struct sockaddr_in server;
-    socklen_t slen = sizeof(server);
+    struct sockaddr_in client_addr, server_addr;
+    socklen_t slen = sizeof(server_addr);
     char sendBuf[BUFLEN], recvBuf[BUFLEN];
+
+    char ipBuffer[64];
+    FILE *ipFile = fopen(argv[1], "r");
+    if (!ipFile) {
+        perror("The IP configuration file cannot be read. \n");
+    }
+    fgets(ipBuffer, sizeof(ipBuffer), ipFile);
+    ipBuffer[strcspn(ipBuffer, "\n")] = 0; 
+    
+    fclose(ipFile);
 
     printf("======== UDP Client ========\n");
 
@@ -41,25 +56,29 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    // Set up server address
-    memset(&server, 0, sizeof(server));
-    server.sin_family = AF_INET;
-    server.sin_addr.s_addr = INADDR_ANY;
-    server.sin_port = htons(PORT);
+    // Bind to client port
+    memset(&client_addr, 0, sizeof(client_addr));
+    client_addr.sin_family = AF_INET;
+    client_addr.sin_addr.s_addr = INADDR_ANY;
+    client_addr.sin_port = htons(CLIENT_PORT);
 
-    if (bind(sock, (const struct sockaddr *)&server, sizeof(server)) < 0) {
+    if (bind(sock, (struct sockaddr*)&client_addr, sizeof(client_addr)) < 0) {
         perror("Bind failed");
         close(sock);
         exit(EXIT_FAILURE);
     }
 
-    printf("UDP Client running. Waiting for messages...\n");
+    // Set up server address (for sendto)
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(SERVER_PORT);
+    inet_pton(AF_INET, ipBuffer, &server_addr.sin_addr);
 
-
+    printf("UDP Client running on port %d. Waiting for messages...\n", CLIENT_PORT);
 
     while (1) {
         // Wait for message from server
-        int recvLen = recvfrom(sock, recvBuf, BUFLEN, 0, (struct sockaddr*)&server, &slen);
+        int recvLen = recvfrom(sock, recvBuf, BUFLEN, 0, NULL, NULL);
         if (recvLen == -1) {
             perror("recvfrom() failed");
             break;
@@ -68,37 +87,35 @@ int main() {
         recvBuf[recvLen] = '\0';
         printf("Received: %s\n", recvBuf);
 
-        // Parse and respond
-        char seq[6], timestamp[32];
-        sscanf(recvBuf, "%*s %s %s", seq, timestamp);
+        char type[8] = {0}, seq[8] = {0}, timestamp[32] = {0};
+        sscanf(recvBuf, "%s %s %s", type, seq, timestamp);
 
-        // Check message type
-        if (recvBuf[0] == 'R') {
-            // Respond with: ACK R <seq> <timestamp>
+        if (strcmp(type, "R") == 0 || strcmp(type, "r") == 0) {
+            // Respond to request
             snprintf(sendBuf, sizeof(sendBuf), "ACK R %s %s", seq, get_time_str());
-            sendto(sock, sendBuf, strlen(sendBuf), 0, (struct sockaddr*)&server, slen);
+            sendto(sock, sendBuf, strlen(sendBuf), 0, (struct sockaddr*)&server_addr, slen);
             printf("Sent: %s\n", sendBuf);
         }
-        // Exit
-        else if (recvBuf[0] == QUITKEY) {
-            // Received termination message: E <seq> <timestamp>
+        else if (strcmp(type, "E") == 0 || strcmp(type, "e") == 0) {
+            // First ACK: ACK E <seq> <client_time>
             snprintf(sendBuf, sizeof(sendBuf), "ACK E %s %s", seq, get_time_str());
-            sendto(sock, sendBuf, strlen(sendBuf), 0, (struct sockaddr*)&server, slen);
+            sendto(sock, sendBuf, strlen(sendBuf), 0, (struct sockaddr*)&server_addr, slen);
             printf("Sent Termination ACK: %s\n", sendBuf);
 
-            // Final ACK from server
-            recvLen = recvfrom(sock, recvBuf, BUFLEN, 0, (struct sockaddr*)&server, &slen);
+            // Wait for final ACK from server: ACK <seq> <timestamp>
+            recvLen = recvfrom(sock, recvBuf, BUFLEN, 0, NULL, NULL);
             if (recvLen == -1) {
                 perror("Final ACK receive failed");
+                printf("⚠️ No final ACK from server. Proceeding to terminate anyway.\n");
             } else {
                 recvBuf[recvLen] = '\0';
                 printf("Received Final ACK: %s\n", recvBuf);
             }
+
             break;
         }
     }
 
-    // Cleanup
     close(sock);
     printf("Client terminated.\n");
     return 0;

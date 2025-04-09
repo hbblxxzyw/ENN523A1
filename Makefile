@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -O2
+CFLAGS = -Wall -Wextra -O2 -lpthread
 
 SERVER_BIN = server/udp_server_linux
 CLIENT_BIN = client/udp_client_linux
