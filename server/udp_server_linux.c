@@ -96,7 +96,7 @@ int main(int argc, char **argv) {
         printf("=============== Available Commands ===============\n");
         printf("E / e : Terminate the client-server system\n");
         printf("V / v : Toggle verbose mode (show all sent/received logs)\n");
-        printf("S / S : Display connection status\n");
+        printf("S / s : Display connection status\n");
         printf("==================================================\n");
         printf("Please enter your command:\n");
         char ch = getchar();
@@ -111,7 +111,6 @@ int main(int argc, char **argv) {
         if (ch == 'S' || ch == 's') {
             get_status(client);
         }
-        
     }
     pthread_join(commThread, NULL);
 
@@ -163,6 +162,8 @@ void *communication_thread(void *wrappedArgs) {
         // Receive reply
         recvLen = recvfrom(sock, recvBuf, BUFLEN, 0, (struct sockaddr*)&clientAddr, &slen);
         if (recvLen == -1) {
+            connectFlag = 0;
+            connectTime = 0;
             continue;
             //perror("Receive failed");
             //break;
@@ -221,7 +222,7 @@ void *communication_thread(void *wrappedArgs) {
     printf("Sent Termination ACK: %s\n", sendBuf);
 
 
-    recvLen = recvfrom(sock, recvBuf, BUFLEN, 0, (struct sockaddr*)&serverAddr, &slen);
+    recvLen = recvfrom(sock, recvBuf, BUFLEN, 0, (struct sockaddr*)&clientAddr, &slen);
     if (recvLen > 0) {
         recvBuf[recvLen] = '\0';
         if (strncmp(recvBuf, "ACK E", 5) == 0) {
@@ -230,7 +231,7 @@ void *communication_thread(void *wrappedArgs) {
             }
             // Final ACK
             sprintf(sendBuf, "ACK %05d %s", exitSeq, get_time_str());
-            sendto(sock, sendBuf, strlen(sendBuf), 0, (struct sockaddr*)&serverAddr, slen);
+            sendto(sock, sendBuf, strlen(sendBuf), 0, (struct sockaddr*)&clientAddr, slen);
             if (verboseFlag) {
                 printf("Sent final ACK: %s\n", sendBuf);
             }
