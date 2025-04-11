@@ -18,7 +18,9 @@
 /* Function declaration*/
 char* get_time_str();
 unsigned long get_time_ms();
+unsigned long get_time_us();
 void *communication_thread(void *args);
+int get_status(struct sockaddr_in clientAddr);
 /* Struct definition*/
 typedef struct {
     int sock;
@@ -28,7 +30,10 @@ typedef struct {
 
 /* Global viarable declaration*/
 volatile int exitFlag = 0; // Indicates if exit command received
-
+volatile int verboseFlag = 0; // Indicates if verbose mode command received
+volatile int connectFlag = 0; // Indicates if a client has connected
+volatile unsigned long avgRtt = 0; // Average RTT for latest five communications
+volatile int connectDuration = 0;
 
 int main(int argc, char **argv) {
     
@@ -42,8 +47,7 @@ int main(int argc, char **argv) {
     int sock;
     pthread_t commThread;
     struct sockaddr_in server, client;
-    socklen_t slen = sizeof(client);
-    int portNum = 0;
+
     // Reading ip address and port number from config file
     char ipBuffer[64];
     FILE *ipFile = fopen(argv[1], "r");
@@ -89,11 +93,25 @@ int main(int argc, char **argv) {
     printf("UDP Server running on port %d...\n", PORT);
     
     while (1) {
+        printf("=============== Available Commands ===============\n");
+        printf("E / e : Terminate the client-server system\n");
+        printf("V / v : Toggle verbose mode (show all sent/received logs)\n");
+        printf("S / S : Display connection status\n");
+        printf("==================================================\n");
+        printf("Please enter your command:\n");
         char ch = getchar();
+        getchar(); //remove the enter
         if (ch == 'E' || ch == 'e') {
             exitFlag = 1;
             break;
         }
+        if (ch == 'V' || ch == 'v') {
+            verboseFlag = !verboseFlag;
+        }
+        if (ch == 'S' || ch == 's') {
+            get_status(client);
+        }
+        
     }
     pthread_join(commThread, NULL);
 
@@ -112,27 +130,35 @@ void *communication_thread(void *wrappedArgs) {
     char sendBuf[BUFLEN], recvBuf[BUFLEN];
     int seq = 1;
     unsigned long startTime, endTime;
-
-    
-
+    long rttRecord[5] = {0};
+    int rttCount = 0;
+    int rttIndex = 0;
     struct timeval timeout;
     timeout.tv_sec = 5;
     timeout.tv_usec = 0;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
     int recvLen = 0;
+    int repliedFlag = 0;
+    time_t connectTime = 0;
+    
     while (!exitFlag) {
         char seqstr[100];
+        repliedFlag = 0;
         sprintf(seqstr, "%05d", seq); // Format sequence number
 
         // Send "R <seq> <timestamp>" to client
-        startTime = get_time_ms();
+        startTime = get_time_us();
+
         sprintf(sendBuf, "R %s %s", seqstr, get_time_str());
 
         if (sendto(sock, sendBuf, sizeof(sendBuf), 0, (struct sockaddr*)&clientAddr, sizeof(clientAddr)) == -1) {
             perror("Send failed");
             break;
         }
-        printf("Sent: %s\n", sendBuf);
+        if (verboseFlag) {
+            printf("Sent: %s\n", sendBuf);
+        }
+        
 
         // Receive reply
         recvLen = recvfrom(sock, recvBuf, BUFLEN, 0, (struct sockaddr*)&clientAddr, &slen);
@@ -142,17 +168,46 @@ void *communication_thread(void *wrappedArgs) {
             //break;
         }
         recvBuf[recvLen] = '\0';
-        printf("Received: %s\n", recvBuf);
-        endTime = get_time_ms();
+        if (verboseFlag) {
+            printf("Received: %s\n", recvBuf);
+        }
+        endTime = get_time_us();
 
         // Handle ACK R
         if (strncmp(recvBuf, "ACK R", 5) == 0) {
-            printf("RTT for seq %s = %lu ms\n", seqstr, endTime - startTime);
+            repliedFlag = 1;
+            rttRecord[rttIndex] = endTime - startTime;
+            rttIndex = (rttIndex + 1) % 5;
+            if (rttCount < 5) {
+                rttCount++;
+            } 
+            unsigned long total = 0;
+            for (int i = 0; i < rttCount; i++) {
+                total += rttRecord[i];
+            }
+            avgRtt = total / rttCount;
+            if (verboseFlag) {
+                printf("RTT for seq %s = %lu us\n", seqstr, endTime - startTime);
+            }
             sprintf(sendBuf, "ACK %s %s", seqstr, get_time_str());
             sendto(sock, sendBuf, strlen(sendBuf), 0, (struct sockaddr*)&clientAddr, slen);
-            printf("Sent: %s\n", sendBuf);
+            if (verboseFlag) {
+                printf("Sent: %s\n", sendBuf);
+            }
         }
-
+        if (repliedFlag && !connectFlag) {
+            // record the time of connection
+            connectTime = time(NULL);
+            connectFlag = 1;
+        } else if (!repliedFlag) {
+            connectFlag = 0;
+            connectTime = 0;
+        } 
+        
+        if (connectTime) {
+            time_t now = time(NULL);
+            connectDuration = (int)difftime(now, connectTime);
+        }
         
 
         seq++; // Increment sequence number
@@ -160,33 +215,58 @@ void *communication_thread(void *wrappedArgs) {
     }
 
     // Exit
-    char eSeq[6], timeRecv[32];
     int exitSeq = seq++;
     sprintf(sendBuf, "E %05d %s", exitSeq, get_time_str());
     sendto(sock, sendBuf, strlen(sendBuf), 0, (struct sockaddr*)&clientAddr, slen);
     printf("Sent Termination ACK: %s\n", sendBuf);
 
+
     recvLen = recvfrom(sock, recvBuf, BUFLEN, 0, (struct sockaddr*)&serverAddr, &slen);
     if (recvLen > 0) {
         recvBuf[recvLen] = '\0';
         if (strncmp(recvBuf, "ACK E", 5) == 0) {
-            printf("[Thread] Received: %s\n", recvBuf);
-
+            if (verboseFlag) {
+                printf("Received: %s\n", recvBuf);
+            }
             // Final ACK
             sprintf(sendBuf, "ACK %05d %s", exitSeq, get_time_str());
             sendto(sock, sendBuf, strlen(sendBuf), 0, (struct sockaddr*)&serverAddr, slen);
-            printf("[Thread] Sent final ACK: %s\n", sendBuf);
+            if (verboseFlag) {
+                printf("Sent final ACK: %s\n", sendBuf);
+            }
         } else {
-            printf("[Thread] Unexpected reply during exit: %s\n", recvBuf);
+
+            printf("Unexpected reply during exit: %s\n", recvBuf);
         }
     } else {
-        printf("[Thread] No ACK E received, proceeding with forced exit.\n");
+        printf("No ACK E received, proceeding with forced exit.\n");
     }
 
     // Cleanup
     close(sock);
     printf("Server terminated.\n");
     return NULL;
+}
+
+int get_status(struct sockaddr_in clientAddr) {
+    printf("\n=============== Server Status ====================\n");
+    if (!connectFlag) {
+        printf("Client connection status : Not connected\n");
+    } else {
+        char clientIp[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &(clientAddr.sin_addr), clientIp, INET_ADDRSTRLEN);
+        int clientPort = ntohs(clientAddr.sin_port);
+        int hours = connectDuration / 3600;
+        int minutes = (connectDuration % 3600) / 60;
+        int seconds = connectDuration % 60;
+
+        printf("Client connection status : Connected\n");
+        printf("Client IP   : %s\n", clientIp);
+        printf("Client Port : %d\n", clientPort);
+        printf("Connected for : %02d:%02d:%02d\n", hours, minutes, seconds);
+        }
+    printf("==================================================\n");
+    return 0;
 }
 
 // Get current time as string
@@ -208,4 +288,11 @@ unsigned long get_time_ms() {
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (tv.tv_sec * 1000) + (tv.tv_usec / 1000);
+}
+
+// Get current time in microseconds
+unsigned long get_time_us() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (tv.tv_sec * 1000000) + (tv.tv_usec);
 }
